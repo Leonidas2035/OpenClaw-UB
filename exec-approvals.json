@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "socket": {
+    "path": "/home/korben/.openclaw/exec-approvals.sock",
+    "token": "agfof4DUDpl5yYhE2Olps7v7UHJSt671"
+  },
+  "defaults": {},
+  "agents": {}
+}

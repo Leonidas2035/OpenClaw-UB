@@ -1,0 +1,629 @@
+#!/usr/bin/env python3
+"""
+gsd-sdk — OpenClaw GSD SDK CLI
+Drop-in replacement for the TypeScript gsd-sdk / gsd-tools.cjs commands.
+Routes `gsd-sdk query <handler> [args...]` to Python handlers.
+
+Usage:
+    gsd-sdk query state.load
+    gsd-sdk query state.advance-plan
+    gsd-sdk query state.update-progress
+    gsd-sdk query state.record-metric <phase> <plan> <duration> <tasks> <files>
+    gsd-sdk query state.add-decision <decision>
+    gsd-sdk query state.add-blocker <blocker>
+    gsd-sdk query state.record-session <timestamp> <stopped_at> <resume_file>
+    gsd-sdk query state.begin-phase --phase <N> --name <name> --plans <count>
+    gsd-sdk query roadmap.update-plan-progress <phase_number>
+    gsd-sdk query requirements.mark-complete <req_ids...>
+    gsd-sdk query config-get <key> [--default <val>]
+    gsd-sdk query config-set <key> <value>
+    gsd-sdk query commit <message> [files...]
+    gsd-sdk query init.execute-phase <phase>
+    gsd-sdk query phase-plan-index <phase>
+    gsd-sdk query agent-skills <agent_name>
+"""
+
+import sys
+import os
+import json
+import re
+import subprocess
+from pathlib import Path
+from datetime import datetime, timezone
+
+# ─── Resolve project directories ─────────────────────────────────────────────
+
+OPENCLAW_DIR = Path(os.environ.get("OPENCLAW_DIR", os.path.expanduser("~/.openclaw")))
+WORKSPACE_DIR = Path(os.environ.get("GSD_WORKSPACE", os.getcwd()))
+
+def planning_dir():
+    """Resolve .planning/ directory, supporting workstreams."""
+    base = WORKSPACE_DIR / ".planning"
+    ws = os.environ.get("GSD_WORKSTREAM")
+    if ws:
+        return base / "workstreams" / ws
+    return base
+
+def state_path():
+    return planning_dir() / "STATE.md"
+
+def roadmap_path():
+    return planning_dir() / "ROADMAP.md"
+
+def requirements_path():
+    return planning_dir() / "REQUIREMENTS.md"
+
+def project_path():
+    return planning_dir() / "PROJECT.md"
+
+def config_path():
+    return planning_dir() / "config.json"
+
+# ─── Config helpers ───────────────────────────────────────────────────────────
+
+def load_config():
+    """Load .planning/config.json, return empty dict if missing."""
+    cp = config_path()
+    if cp.exists():
+        return json.loads(cp.read_text(encoding="utf-8"))
+    return {}
+
+def save_config(cfg):
+    cp = config_path()
+    cp.parent.mkdir(parents=True, exist_ok=True)
+    cp.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+def get_nested(obj, dotpath, default=None):
+    """Get a value from nested dict using dot-path notation."""
+    keys = dotpath.split(".")
+    for k in keys:
+        if isinstance(obj, dict) and k in obj:
+            obj = obj[k]
+        else:
+            return default
+    return obj
+
+def set_nested(obj, dotpath, value):
+    """Set a value in nested dict using dot-path notation."""
+    keys = dotpath.split(".")
+    for k in keys[:-1]:
+        if k not in obj or not isinstance(obj[k], dict):
+            obj[k] = {}
+        obj = obj[k]
+    # Auto-coerce booleans/numbers
+    if value == "true":
+        value = True
+    elif value == "false":
+        value = False
+    elif value.isdigit():
+        value = int(value)
+    obj[keys[-1]] = value
+
+# ─── State handlers ──────────────────────────────────────────────────────────
+
+def cmd_state_load():
+    """Print current state as JSON."""
+    sp = state_path()
+    if not sp.exists():
+        print(json.dumps({"error": "STATE.md not found", "exists": False}))
+        return
+    content = sp.read_text(encoding="utf-8")
+
+    # Parse key fields
+    result = {"exists": True}
+    phase_match = re.search(r"Phase:\s*(\d+)\s*of\s*(\d+)\s*\(([^)]+)\)", content)
+    if phase_match:
+        result["phase_current"] = int(phase_match.group(1))
+        result["phase_total"] = int(phase_match.group(2))
+        result["phase_name"] = phase_match.group(3)
+
+    plan_match = re.search(r"Plan:\s*(\d+)\s*of\s*(\d+)", content)
+    if plan_match:
+        result["plan_current"] = int(plan_match.group(1))
+        result["plan_total"] = int(plan_match.group(2))
+
+    status_match = re.search(r"Status:\s*(.+)", content)
+    if status_match:
+        result["status"] = status_match.group(1).strip()
+
+    progress_match = re.search(r"Progress:\s*\[([░█▓▒]*)\]\s*(\d+)%", content)
+    if progress_match:
+        result["progress_pct"] = int(progress_match.group(2))
+
+    print(json.dumps(result, indent=2))
+
+def cmd_state_advance_plan():
+    """Increment Current Plan counter in STATE.md."""
+    sp = state_path()
+    if not sp.exists():
+        print(json.dumps({"error": "STATE.md not found"}))
+        return
+
+    content = sp.read_text(encoding="utf-8")
+    match = re.search(r"(Plan:\s*)(\d+)(\s*of\s*)(\d+)", content)
+    if match:
+        current = int(match.group(2))
+        total = int(match.group(4))
+        new_current = min(current + 1, total)
+        content = content[:match.start()] + f"{match.group(1)}{new_current}{match.group(3)}{total}" + content[match.end():]
+
+        # Update status
+        if new_current > total:
+            content = re.sub(r"Status:\s*.+", "Status: Phase complete", content)
+        else:
+            content = re.sub(r"Status:\s*.+", "Status: In progress", content)
+
+        # Update last activity
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        content = re.sub(r"Last activity:\s*.+", f"Last activity: {now} — Advanced to plan {new_current}", content)
+
+        sp.write_text(content, encoding="utf-8")
+        print(json.dumps({"plan_current": new_current, "plan_total": total}))
+    else:
+        print(json.dumps({"error": "Could not find Plan counter"}))
+
+def cmd_state_update_progress():
+    """Recalculate progress bar from SUMMARY.md counts on disk."""
+    pd = planning_dir()
+    phases_dir = pd / "phases"
+    if not phases_dir.exists():
+        print(json.dumps({"progress": 0, "completed": 0, "total": 0}))
+        return
+
+    total_plans = 0
+    completed_plans = 0
+    for phase_dir in sorted(phases_dir.iterdir()):
+        if phase_dir.is_dir():
+            plans = list(phase_dir.glob("*-PLAN.md"))
+            summaries = list(phase_dir.glob("*-SUMMARY.md"))
+            total_plans += len(plans)
+            completed_plans += len(summaries)
+
+    pct = int((completed_plans / total_plans * 100)) if total_plans > 0 else 0
+
+    # Update STATE.md progress bar
+    sp = state_path()
+    if sp.exists():
+        content = sp.read_text(encoding="utf-8")
+        bar_filled = int(pct / 10)
+        bar = "█" * bar_filled + "░" * (10 - bar_filled)
+        content = re.sub(r"Progress:\s*\[.*?\]\s*\d+%", f"Progress: [{bar}] {pct}%", content)
+        sp.write_text(content, encoding="utf-8")
+
+    print(json.dumps({"progress": pct, "completed": completed_plans, "total": total_plans}))
+
+def cmd_state_record_metric(args):
+    """Append to Performance Metrics table."""
+    if len(args) < 5:
+        print(json.dumps({"error": "Usage: state.record-metric <phase> <plan> <duration> <tasks> <files>"}))
+        return
+    phase, plan, duration, tasks, files = args[:5]
+    sp = state_path()
+    if not sp.exists():
+        return
+
+    content = sp.read_text(encoding="utf-8")
+    metric_line = f"| {phase} | {plan} | {duration} | {tasks} tasks | {files} files |"
+
+    # Insert before the line "| - | - | - | - |" or at end of metrics table
+    if "| - | - | - | - |" in content:
+        content = content.replace("| - | - | - | - |", metric_line, 1)
+    else:
+        # Append after Performance Metrics header
+        content = content.replace("*Updated after each plan completion*",
+                                  f"{metric_line}\n\n*Updated after each plan completion*")
+
+    sp.write_text(content, encoding="utf-8")
+    print(json.dumps({"recorded": True, "phase": phase, "plan": plan}))
+
+def cmd_state_add_decision(args):
+    """Add a decision entry to STATE.md."""
+    if not args:
+        print(json.dumps({"error": "Usage: state.add-decision <decision text>"}))
+        return
+    decision = " ".join(args)
+    sp = state_path()
+    if not sp.exists():
+        return
+
+    content = sp.read_text(encoding="utf-8")
+    entry = f"- {decision}"
+
+    # Find Decisions section and append
+    if "### Decisions" in content:
+        content = content.replace("### Decisions\n", f"### Decisions\n\n{entry}\n", 1)
+    sp.write_text(content, encoding="utf-8")
+    print(json.dumps({"added": True}))
+
+def cmd_state_add_blocker(args):
+    """Add a blocker to STATE.md."""
+    if not args:
+        return
+    blocker = " ".join(args)
+    sp = state_path()
+    if not sp.exists():
+        return
+
+    content = sp.read_text(encoding="utf-8")
+    entry = f"- ⚠️ {blocker}"
+
+    if "None yet." in content:
+        content = content.replace("None yet.", entry, 1)
+    elif "### Blockers/Concerns" in content:
+        content = content.replace("### Blockers/Concerns\n", f"### Blockers/Concerns\n\n{entry}\n", 1)
+
+    sp.write_text(content, encoding="utf-8")
+    print(json.dumps({"added": True}))
+
+def cmd_state_record_session(args):
+    """Update session continuity fields."""
+    timestamp = args[0] if len(args) > 0 and args[0] else datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+    stopped_at = args[1] if len(args) > 1 else "Unknown"
+    resume_file = args[2] if len(args) > 2 else "None"
+
+    sp = state_path()
+    if not sp.exists():
+        return
+
+    content = sp.read_text(encoding="utf-8")
+    content = re.sub(r"Last session:\s*.+", f"Last session: {timestamp}", content)
+    content = re.sub(r"Stopped at:\s*.+", f"Stopped at: {stopped_at}", content)
+    content = re.sub(r"Resume file:\s*.+", f"Resume file: {resume_file}", content)
+    sp.write_text(content, encoding="utf-8")
+    print(json.dumps({"updated": True}))
+
+def cmd_state_begin_phase(args):
+    """Update STATE.md to mark a new phase as started."""
+    # Parse --phase N --name Name --plans Count
+    phase = name = plans = None
+    i = 0
+    while i < len(args):
+        if args[i] == "--phase" and i + 1 < len(args):
+            phase = args[i + 1]; i += 2
+        elif args[i] == "--name" and i + 1 < len(args):
+            name = args[i + 1]; i += 2
+        elif args[i] == "--plans" and i + 1 < len(args):
+            plans = args[i + 1]; i += 2
+        else:
+            i += 1
+
+    if not all([phase, name, plans]):
+        print(json.dumps({"error": "Usage: state.begin-phase --phase N --name Name --plans Count"}))
+        return
+
+    sp = state_path()
+    if not sp.exists():
+        return
+
+    content = sp.read_text(encoding="utf-8")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    content = re.sub(r"Status:\s*.+", "Status: In progress", content)
+    content = re.sub(r"Last activity:\s*.+", f"Last activity: {now} — Starting phase {phase}: {name}", content)
+    content = re.sub(r"Plan:\s*\d+\s*of\s*\d+", f"Plan: 1 of {plans}", content)
+    content = re.sub(r"\*\*Current focus:\*\*\s*.+", f"**Current focus:** {name}", content)
+
+    sp.write_text(content, encoding="utf-8")
+    print(json.dumps({"phase": phase, "name": name, "plans": int(plans)}))
+
+# ─── Config handlers ─────────────────────────────────────────────────────────
+
+def cmd_config_get(args):
+    """Get a config value by dot-path."""
+    if not args:
+        print(""); return
+    key = args[0]
+    default = None
+    if "--default" in args:
+        idx = args.index("--default")
+        if idx + 1 < len(args):
+            default = args[idx + 1]
+
+    cfg = load_config()
+    val = get_nested(cfg, key, default)
+    if val is None:
+        print(default if default else "")
+    elif isinstance(val, bool):
+        print(str(val).lower())
+    else:
+        print(str(val))
+
+def cmd_config_set(args):
+    """Set a config value by dot-path."""
+    if len(args) < 2:
+        print(json.dumps({"error": "Usage: config-set <key> <value>"}))
+        return
+    key, value = args[0], args[1]
+    cfg = load_config()
+    set_nested(cfg, key, value)
+    save_config(cfg)
+    print(json.dumps({"set": True, "key": key, "value": value}))
+
+# ─── Git / commit handlers ───────────────────────────────────────────────────
+
+def cmd_commit(args):
+    """Commit specific files with a message."""
+    if not args:
+        print(json.dumps({"error": "Usage: commit <message> [files...]"}))
+        return
+    message = args[0]
+    files = args[1:] if len(args) > 1 else []
+
+    try:
+        if files:
+            for f in files:
+                subprocess.run(["git", "add", f], cwd=str(WORKSPACE_DIR), check=True, capture_output=True)
+        result = subprocess.run(
+            ["git", "commit", "-m", message],
+            cwd=str(WORKSPACE_DIR), capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            hash_result = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=str(WORKSPACE_DIR), capture_output=True, text=True
+            )
+            commit_hash = hash_result.stdout.strip()
+            print(json.dumps({"committed": True, "hash": commit_hash}))
+        else:
+            print(json.dumps({"committed": False, "error": result.stderr.strip()}))
+    except Exception as e:
+        print(json.dumps({"committed": False, "error": str(e)}))
+
+# ─── Init handlers ───────────────────────────────────────────────────────────
+
+def cmd_init_execute_phase(args):
+    """Initialize execution context for a phase."""
+    if not args:
+        print(json.dumps({"error": "Usage: init.execute-phase <phase>"}))
+        return
+    phase_arg = args[0]
+    pd = planning_dir()
+    phases_dir = pd / "phases"
+    cfg = load_config()
+
+    # Find the phase directory
+    phase_dir = None
+    phase_name = ""
+    phase_number = phase_arg
+
+    if phases_dir.exists():
+        for d in sorted(phases_dir.iterdir()):
+            if d.is_dir() and d.name.startswith(phase_arg.zfill(2)):
+                phase_dir = str(d)
+                phase_name = d.name.split("-", 1)[1] if "-" in d.name else d.name
+                break
+
+    # Count plans
+    plans = []
+    incomplete_plans = []
+    if phase_dir:
+        phase_path = Path(phase_dir)
+        for f in sorted(phase_path.glob("*-PLAN.md")):
+            plan_id = f.stem.replace("-PLAN", "")
+            has_summary = (phase_path / f"{plan_id}-SUMMARY.md").exists()
+            plans.append(plan_id)
+            if not has_summary:
+                incomplete_plans.append(plan_id)
+
+    result = {
+        "executor_model": get_nested(cfg, "models.executor", "inherit"),
+        "verifier_model": get_nested(cfg, "models.verifier", "inherit"),
+        "commit_docs": get_nested(cfg, "commit_docs", True),
+        "parallelization": get_nested(cfg, "parallelization", True),
+        "branching_strategy": get_nested(cfg, "branching_strategy", "none"),
+        "branch_name": "",
+        "phase_found": phase_dir is not None,
+        "phase_dir": phase_dir or "",
+        "phase_number": phase_number,
+        "phase_name": phase_name,
+        "phase_slug": f"{phase_number.zfill(2)}-{phase_name}",
+        "plans": plans,
+        "incomplete_plans": incomplete_plans,
+        "plan_count": len(plans),
+        "incomplete_count": len(incomplete_plans),
+        "state_exists": state_path().exists(),
+        "roadmap_exists": roadmap_path().exists(),
+        "response_language": get_nested(cfg, "response_language", ""),
+    }
+    print(json.dumps(result, indent=2))
+
+# ─── Phase plan index ────────────────────────────────────────────────────────
+
+def cmd_phase_plan_index(args):
+    """Build plan index with wave grouping for a phase."""
+    if not args:
+        print(json.dumps({"error": "Usage: phase-plan-index <phase>"}))
+        return
+    phase_arg = args[0]
+    pd = planning_dir()
+    phases_dir = pd / "phases"
+
+    # Find phase directory
+    phase_dir = None
+    if phases_dir.exists():
+        for d in sorted(phases_dir.iterdir()):
+            if d.is_dir() and d.name.startswith(phase_arg.zfill(2)):
+                phase_dir = d
+                break
+
+    if not phase_dir:
+        print(json.dumps({"error": f"Phase {phase_arg} not found", "phase": phase_arg, "plans": [], "waves": {}, "incomplete": [], "has_checkpoints": False}))
+        return
+
+    plans = []
+    waves = {}
+    incomplete = []
+    has_checkpoints = False
+
+    for f in sorted(phase_dir.glob("*-PLAN.md")):
+        content = f.read_text(encoding="utf-8")
+        plan_id = f.stem.replace("-PLAN", "")
+        has_summary = (phase_dir / f"{plan_id}-SUMMARY.md").exists()
+
+        # Parse frontmatter
+        wave = 1
+        autonomous = True
+        objective = ""
+        files_modified = []
+        task_count = 0
+
+        # Extract wave
+        wave_match = re.search(r"^wave:\s*(\d+)", content, re.MULTILINE)
+        if wave_match:
+            wave = int(wave_match.group(1))
+
+        # Extract autonomous
+        auto_match = re.search(r"^autonomous:\s*(true|false)", content, re.MULTILINE)
+        if auto_match:
+            autonomous = auto_match.group(1) == "true"
+            if not autonomous:
+                has_checkpoints = True
+
+        # Extract objective
+        obj_match = re.search(r"<objective>(.*?)</objective>", content, re.DOTALL)
+        if obj_match:
+            objective = obj_match.group(1).strip()[:200]
+
+        # Extract files_modified
+        fm_match = re.search(r"^files_modified:\s*\[([^\]]*)\]", content, re.MULTILINE)
+        if fm_match:
+            files_modified = [f.strip().strip("'\"") for f in fm_match.group(1).split(",") if f.strip()]
+
+        # Count tasks
+        task_count = len(re.findall(r"<task\b", content))
+
+        plan_info = {
+            "id": plan_id,
+            "wave": wave,
+            "autonomous": autonomous,
+            "objective": objective,
+            "files_modified": files_modified,
+            "task_count": task_count,
+            "has_summary": has_summary,
+        }
+        plans.append(plan_info)
+
+        # Group by wave
+        wave_key = str(wave)
+        if wave_key not in waves:
+            waves[wave_key] = []
+        waves[wave_key].append(plan_id)
+
+        if not has_summary:
+            incomplete.append(plan_id)
+
+    print(json.dumps({
+        "phase": phase_arg,
+        "plans": plans,
+        "waves": waves,
+        "incomplete": incomplete,
+        "has_checkpoints": has_checkpoints,
+    }, indent=2))
+
+# ─── Agent skills ─────────────────────────────────────────────────────────────
+
+def cmd_agent_skills(args):
+    """Return agent skill instructions if available."""
+    skills_dir = WORKSPACE_DIR / ".openclaw" / "skills"
+    if not skills_dir.exists():
+        skills_dir = OPENCLAW_DIR / "skills"
+
+    if skills_dir.exists():
+        skills = []
+        for f in sorted(skills_dir.glob("*.md")):
+            skills.append(f"- {f.stem}: {f.read_text(encoding='utf-8')[:200]}")
+        if skills:
+            print("\n<agent_skills>\n" + "\n".join(skills) + "\n</agent_skills>")
+            return
+
+    print("")
+
+# ─── Roadmap handlers ────────────────────────────────────────────────────────
+
+def cmd_roadmap_update_plan_progress(args):
+    """Update ROADMAP.md progress for a phase."""
+    if not args:
+        return
+    phase_number = args[0]
+    rp = roadmap_path()
+    if not rp.exists():
+        print(json.dumps({"error": "ROADMAP.md not found"}))
+        return
+
+    # Count plans/summaries
+    pd = planning_dir() / "phases"
+    if not pd.exists():
+        return
+
+    for d in sorted(pd.iterdir()):
+        if d.is_dir() and d.name.startswith(phase_number.zfill(2)):
+            plans = len(list(d.glob("*-PLAN.md")))
+            summaries = len(list(d.glob("*-SUMMARY.md")))
+            print(json.dumps({"phase": phase_number, "plans": plans, "completed": summaries}))
+            return
+
+    print(json.dumps({"error": f"Phase {phase_number} not found in phases/"}))
+
+def cmd_requirements_mark_complete(args):
+    """Mark requirement IDs as complete in REQUIREMENTS.md."""
+    if not args:
+        return
+    rp = requirements_path()
+    if not rp.exists():
+        print(json.dumps({"error": "REQUIREMENTS.md not found"}))
+        return
+
+    content = rp.read_text(encoding="utf-8")
+    for req_id in args:
+        # Check off: - [ ] REQ-ID → - [x] REQ-ID
+        content = re.sub(
+            rf"- \[ \] ({re.escape(req_id)})",
+            rf"- [x] \1",
+            content
+        )
+    rp.write_text(content, encoding="utf-8")
+    print(json.dumps({"marked_complete": args}))
+
+# ─── Command router ──────────────────────────────────────────────────────────
+
+HANDLERS = {
+    "state.load": lambda a: cmd_state_load(),
+    "state.advance-plan": lambda a: cmd_state_advance_plan(),
+    "state.update-progress": lambda a: cmd_state_update_progress(),
+    "state.record-metric": cmd_state_record_metric,
+    "state.add-decision": cmd_state_add_decision,
+    "state.add-blocker": cmd_state_add_blocker,
+    "state.record-session": cmd_state_record_session,
+    "state.begin-phase": cmd_state_begin_phase,
+    "config-get": cmd_config_get,
+    "config-set": cmd_config_set,
+    "commit": cmd_commit,
+    "init.execute-phase": cmd_init_execute_phase,
+    "phase-plan-index": cmd_phase_plan_index,
+    "agent-skills": cmd_agent_skills,
+    "roadmap.update-plan-progress": cmd_roadmap_update_plan_progress,
+    "requirements.mark-complete": cmd_requirements_mark_complete,
+}
+
+def main():
+    args = sys.argv[1:]
+
+    if not args or args[0] != "query":
+        print(f"Usage: gsd-sdk query <handler> [args...]")
+        print(f"Available handlers: {', '.join(sorted(HANDLERS.keys()))}")
+        sys.exit(1)
+
+    if len(args) < 2:
+        print(f"Available handlers: {', '.join(sorted(HANDLERS.keys()))}")
+        sys.exit(1)
+
+    handler_name = args[1]
+    handler_args = args[2:]
+
+    if handler_name in HANDLERS:
+        HANDLERS[handler_name](handler_args)
+    else:
+        print(json.dumps({"error": f"Unknown handler: {handler_name}"}))
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
