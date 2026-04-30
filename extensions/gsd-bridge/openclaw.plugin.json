@@ -1,0 +1,62 @@
+{
+  "id": "gsd-bridge",
+  "version": "0.1.0",
+  "type": "native",
+  "displayName": "GSD Planning Bridge",
+  "description": "Міст між GSD-планувальником і виконавчою чергою OpenClaw LOOP-QUEUE",
+  "author": "Leonidas2035",
+  "capabilities": ["tools"],
+  "entryPoint": "dist/index.js",
+  "engines": {
+    "openclaw": ">=2026.4.0",
+    "node": ">=24.3"
+  },
+  "configSchema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "required": ["projectRoot"],
+    "additionalProperties": false,
+    "properties": {
+      "projectRoot": {
+        "type": "string",
+        "description": "Абсолютний шлях до кореневого робочого простору проєкту (де знаходиться .planning/)",
+        "examples": ["/home/korben/.openclaw/workspace"]
+      },
+      "syncIntervalMs": {
+        "type": "integer",
+        "description": "Інтервал автоматичної синхронізації GSD → LOOP-QUEUE (мс). 0 = вимкнено",
+        "default": 600000,
+        "minimum": 0
+      },
+      "gsdBinary": {
+        "type": "string",
+        "description": "Ім'я або шлях до GSD CLI (npx-сумісне)",
+        "default": "get-shit-done-cc"
+      },
+      "maxQueueSize": {
+        "type": "integer",
+        "description": "Максимальна кількість одночасних завдань у LOOP-QUEUE",
+        "default": 50,
+        "minimum": 1,
+        "maximum": 200
+      }
+    }
+  },
+  "hooks": [
+    "chat:message"
+  ],
+  "tools": [
+    {
+      "name": "gsd_plan_phase",
+      "description": "Запустити GSD-планування для вказаної фази проєкту"
+    },
+    {
+      "name": "gsd_execute_queue",
+      "description": "Отримати наступне невиконане завдання з LOOP-QUEUE"
+    },
+    {
+      "name": "gsd_sync_now",
+      "description": "Примусова синхронізація GSD STATE.md → LOOP-QUEUE.md"
+    }
+  ]
+}

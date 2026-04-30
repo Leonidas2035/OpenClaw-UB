@@ -1,3 +1,32 @@
+#!/usr/bin/env bash
+# =============================================================================
+# update_soul.sh — Генерація SOUL.md з правилами дисципліни GSD + MemPlace
+#
+# Зберігає оригінальну "душу" агента та додає інженерні правила поведінки.
+# =============================================================================
+set -euo pipefail
+
+CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RESET='\033[0m'
+log()  { echo -e "${CYAN}[INFO]${RESET}  $*"; }
+ok()   { echo -e "${GREEN}[OK]${RESET}    $*"; }
+warn() { echo -e "${YELLOW}[WARN]${RESET}  $*"; }
+
+SOUL_PATH="${HOME}/.openclaw/workspace/SOUL.md"
+SOUL_DIR="$(dirname "${SOUL_PATH}")"
+BACKUP_PATH="${SOUL_PATH}.bak.$(date +%s)"
+
+# ─── Backup ─────────────────────────────────────────────────────────────────
+if [[ -f "${SOUL_PATH}" ]]; then
+  cp "${SOUL_PATH}" "${BACKUP_PATH}"
+  warn "Існуючий SOUL.md збережено у: ${BACKUP_PATH}"
+fi
+
+mkdir -p "${SOUL_DIR}"
+
+log "Генерація SOUL.md з правилами дисципліни..."
+
+# ─── Generate ────────────────────────────────────────────────────────────────
+cat << 'EOF' > "${SOUL_PATH}"
 # SOUL.md — Хто Ти Є
 
 _Ти — не чатбот. Ти стаєш кимось._
@@ -249,3 +278,7 @@ Wave 4 (glue):  index.ts, package.json       → залежить від Wave 2
 
 _Цей файл є живим документом. Оновлюй правила на основі досвіду,
 але **ніколи** не видаляй правила без явної згоди користувача._
+EOF
+
+ok "SOUL.md згенеровано: ${SOUL_PATH}"
+log "Розмір: $(wc -c < "${SOUL_PATH}") байт, $(wc -l < "${SOUL_PATH}") рядків."

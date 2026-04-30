@@ -1,0 +1,67 @@
+{
+  "id": "memory-memplace",
+  "version": "0.1.0",
+  "type": "native",
+  "displayName": "MemPlace Semantic Memory",
+  "description": "Інтеграція семантичної пам'яті через MemPlace MCP-сервер",
+  "author": "Leonidas2035",
+  "capabilities": ["memory", "tools"],
+  "entryPoint": "dist/index.js",
+  "engines": {
+    "openclaw": ">=2026.4.0",
+    "node": ">=24.3"
+  },
+  "configSchema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "required": ["mcpPath"],
+    "additionalProperties": false,
+    "properties": {
+      "mcpPath": {
+        "type": "string",
+        "description": "Абсолютний шлях до виконуваного файлу MCP-сервера MemPlace",
+        "examples": ["/usr/local/bin/mempalace"]
+      },
+      "autoRecall": {
+        "type": "boolean",
+        "description": "Автоматично витягувати релевантні спогади на початку кожного повідомлення",
+        "default": true
+      },
+      "autoCapture": {
+        "type": "boolean",
+        "description": "Автоматично зберігати транскрипт у щоденник перед стисненням контексту",
+        "default": true
+      },
+      "topK": {
+        "type": "integer",
+        "description": "Кількість спогадів для автоматичного recall",
+        "default": 5,
+        "minimum": 1,
+        "maximum": 50
+      },
+      "connectionTimeoutMs": {
+        "type": "integer",
+        "description": "Таймаут підключення до MCP-сервера в мілісекундах",
+        "default": 10000,
+        "minimum": 1000
+      }
+    }
+  },
+  "hooks": [
+    "context:pre-compact"
+  ],
+  "tools": [
+    {
+      "name": "memory_search",
+      "description": "Семантичний пошук у пам'яті MemPlace"
+    },
+    {
+      "name": "memory_add",
+      "description": "Додати новий запис до пам'яті"
+    },
+    {
+      "name": "memory_status",
+      "description": "Перевірити стан палацу пам'яті"
+    }
+  ]
+}

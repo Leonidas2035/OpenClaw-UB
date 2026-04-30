@@ -1,7 +1,7 @@
 {
   "agent:main:main": {
     "sessionId": "3706e71e-4939-4d15-b3d6-ee0c32d63475",
-    "updatedAt": 1777568221146,
+    "updatedAt": 1777571720519,
     "systemSent": true,
     "abortedLastRun": false,
     "chatType": "direct",
@@ -238,7 +238,7 @@
       "version": 0
     },
     "status": "failed",
-    "startedAt": 1777567896091,
+    "startedAt": 1777571469061,
     "fallbackNoticeSelectedModel": "google/gemini-2.5-pro",
     "fallbackNoticeActiveModel": "google-gemini-cli/gemini-2.5-pro",
     "fallbackNoticeReason": "selected model unavailable",
@@ -400,7 +400,7 @@
         "mcpResumeHash": "bd6af3f11e61f894f6f98956f7e02f79ed1ee1ea4a9a3d50b2a6162cf3fef60c"
       }
     },
-    "endedAt": 1777568206142,
-    "runtimeMs": 310051
+    "endedAt": 1777571705509,
+    "runtimeMs": 236448
   }
 }

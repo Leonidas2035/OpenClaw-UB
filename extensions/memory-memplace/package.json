@@ -1,0 +1,25 @@
+{
+  "name": "@openclaw/memory-memplace",
+  "version": "0.1.0",
+  "description": "OpenClaw native plugin — MemPlace semantic memory via MCP",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "build:watch": "tsc --project tsconfig.json --watch",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "engines": {
+    "node": ">=24.3"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  },
+  "peerDependencies": {}
+}
