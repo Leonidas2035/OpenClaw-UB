@@ -15,11 +15,19 @@
     "node": ">=24.3"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.9.0"
+    "@modelcontextprotocol/sdk": "^1.9.0",
+    "openclaw": "file:/home/korben/.npm-global/lib/node_modules/openclaw"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^22.19.17",
     "typescript": "^5.7.0"
   },
-  "peerDependencies": {}
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ],
+    "activation": {
+      "onStartup": true
+    }
+  }
 }

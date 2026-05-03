@@ -15,8 +15,18 @@
     "node": ">=24.3"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^22.19.17",
     "typescript": "^5.7.0"
   },
-  "peerDependencies": {}
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ],
+    "activation": {
+      "onStartup": true
+    }
+  },
+  "dependencies": {
+    "openclaw": "file:/home/korben/.npm-global/lib/node_modules/openclaw"
+  }
 }
